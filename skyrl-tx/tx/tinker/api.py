@@ -38,12 +38,15 @@ ID_MAX_LENGTH = 255
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown."""
+    print("Starting Tinker API server")
 
     db_url = get_async_database_url(app.state.engine_config.database_url)
     app.state.db_engine = create_async_engine(db_url, echo=False)
+    print(f"Connected to database at {db_url}")
 
     async with app.state.db_engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+    print("Database tables created or already exist")
 
     # Setup external inference client if configured
     if app.state.engine_config.external_inference_url:
@@ -51,18 +54,19 @@ async def lifespan(app: FastAPI):
         logger.info(f"External engine configured: {app.state.engine_config.external_inference_url}")
     else:
         app.state.external_inference_client = None
-        logger.info("Using internal engine for inference")
+        print("Using internal engine for inference")
 
     # Build subprocess command with engine config parameters
-    cmd = ["uv", "run", "--extra", "tinker", "-m", "tx.tinker.engine"]
+    # cmd = ["uv", "run", "--extra", "tinker", "-m", "tx.tinker.engine"]
+    cmd = ["python", "-m", "tx.tinker.engine"]
     cmd.extend(config_to_argv(app.state.engine_config))
 
     background_engine = subprocess.Popen(cmd)
-    logger.info(f"Started background engine with PID {background_engine.pid}: {' '.join(cmd)}")
+    print(f"Started background engine with PID {background_engine.pid}: {' '.join(cmd)}")
 
     yield
 
-    logger.info(f"Stopping background engine (PID {background_engine.pid})")
+    print(f"Stopping background engine (PID {background_engine.pid})")
     background_engine.terminate()
     try:
         background_engine.wait(timeout=5)

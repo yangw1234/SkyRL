@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from tx.models.configs import Qwen3Config
+from tx.layers.pt_layers.lora import LoRALinear
 from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
 class RMSNorm(torch.nn.Module):
@@ -49,25 +50,35 @@ class Qwen3Attention(torch.nn.Module):
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.scaling = self.head_dim**-0.5
 
-        self.q_proj = torch.nn.Linear(
+        self.q_proj = LoRALinear(
             config.hidden_size,
             self.num_heads * self.head_dim,
+            max_lora_adapters=config.max_lora_adapters,
+            max_lora_rank=config.max_lora_rank,
             bias=config.attention_bias,
             dtype=dtype,)
         
-        self.k_proj = torch.nn.Linear(
+        self.k_proj = LoRALinear(
             config.hidden_size,
             self.num_key_value_heads * self.head_dim,
-            bias=config.attention_bias, dtype=dtype   )
+            max_lora_adapters=config.max_lora_adapters,
+            max_lora_rank=config.max_lora_rank,
+            bias=config.attention_bias,
+            dtype=dtype)
         
-        self.v_proj = torch.nn.Linear(
+        self.v_proj = LoRALinear(
             config.hidden_size,
             self.num_key_value_heads * self.head_dim,
-            bias=config.attention_bias, dtype=dtype)
+            max_lora_adapters=config.max_lora_adapters,
+            max_lora_rank=config.max_lora_rank,
+            bias=config.attention_bias,
+            dtype=dtype)
         
-        self.o_proj = torch.nn.Linear(
+        self.o_proj = LoRALinear(
             self.num_heads * self.head_dim,
             config.hidden_size,
+            max_lora_adapters=config.max_lora_adapters,
+            max_lora_rank=config.max_lora_rank,
             bias=config.attention_bias,
             dtype=dtype)
         
@@ -80,21 +91,22 @@ class Qwen3Attention(torch.nn.Module):
             *,
             attention_mask: torch.Tensor,
             position_ids: torch.Tensor,
+            adapter_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.size()
         query = self.q_norm(
-            self.q_proj(hidden_states).reshape(batch_size,
+            self.q_proj(hidden_states, adapter_indices=adapter_indices).reshape(batch_size,
                                                seq_len,
                                                self.num_heads,
                                                self.head_dim)
         )
         key = self.k_norm(
-            self.k_proj(hidden_states).reshape(batch_size,
+            self.k_proj(hidden_states, adapter_indices=adapter_indices).reshape(batch_size,
                                                seq_len,
                                                self.num_key_value_heads,
                                                self.head_dim)
         )
-        value = self.v_proj(hidden_states).reshape(batch_size,
+        value = self.v_proj(hidden_states, adapter_indices=adapter_indices).reshape(batch_size,
                                                      seq_len,
                                                      self.num_key_value_heads,
                                                      self.head_dim)
@@ -125,29 +137,35 @@ class Qwen3Attention(torch.nn.Module):
 
         # print(f"Attention output shape: {attn_output.shape}")
 
-        return self.o_proj(attn_output)
+        return self.o_proj(attn_output, adapter_indices=adapter_indices)
 
 class Qwen3MLP(torch.nn.Module):
 
     def __init__(self, config: Qwen3Config, *, dtype: torch.dtype):
         super().__init__()
-        self.gate_proj = torch.nn.Linear(config.hidden_size,
-                                         config.intermediate_size,
-                                         bias=False,
-                                         dtype=dtype)
-        self.up_proj = torch.nn.Linear(config.hidden_size,
-                                       config.intermediate_size,
-                                       bias=False,
-                                       dtype=dtype)
-        self.down_proj = torch.nn.Linear(config.intermediate_size,
-                                         config.hidden_size,
-                                         bias=False,
-                                         dtype=dtype)
+        self.gate_proj = LoRALinear(config.hidden_size,
+                                    config.intermediate_size,
+                                    max_lora_adapters=config.max_lora_adapters,
+                                    max_lora_rank=config.max_lora_rank,
+                                    bias=False,
+                                    dtype=dtype)
+        self.up_proj = LoRALinear(config.hidden_size,
+                                  config.intermediate_size,
+                                  max_lora_adapters=config.max_lora_adapters,
+                                  max_lora_rank=config.max_lora_rank,
+                                  bias=False,
+                                  dtype=dtype)
+        self.down_proj = LoRALinear(config.intermediate_size,
+                                    config.hidden_size,
+                                    max_lora_adapters=config.max_lora_adapters,
+                                    max_lora_rank=config.max_lora_rank,
+                                    bias=False,
+                                    dtype=dtype)
         self.act_fn = nn.functional.silu
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.act_fn(self.gate_proj(hidden_states)) * self.up_proj(hidden_states)
-        hidden_states = self.down_proj(hidden_states)
+    def forward(self, hidden_states: torch.Tensor, adapter_indices: torch.Tensor | None = None) -> torch.Tensor:
+        hidden_states = self.act_fn(self.gate_proj(hidden_states, adapter_indices=adapter_indices)) * self.up_proj(hidden_states, adapter_indices=adapter_indices)
+        hidden_states = self.down_proj(hidden_states, adapter_indices=adapter_indices)
         return hidden_states
 
 class Qwen3DecoderLayer(torch.nn.Module):
@@ -165,6 +183,7 @@ class Qwen3DecoderLayer(torch.nn.Module):
             *,
             attention_mask: torch.Tensor,
             position_ids: torch.Tensor,
+            adapter_indices: torch.Tensor | None = None,
             do_print: bool = False,
     ) -> torch.Tensor:
         if do_print:
@@ -177,6 +196,7 @@ class Qwen3DecoderLayer(torch.nn.Module):
             hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
+            adapter_indices=adapter_indices,
         )
         if do_print:
             print(f"After self attention: {hidden_states}")
@@ -186,7 +206,7 @@ class Qwen3DecoderLayer(torch.nn.Module):
         hidden_states = self.post_attention_layernorm(hidden_states)
         if do_print:
             print(f"After post-attention layernorm: {hidden_states}")
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, adapter_indices=adapter_indices)
         if do_print:
             print(f"After MLP: {hidden_states}")
         hidden_states = residual + hidden_states
@@ -210,6 +230,7 @@ class Qwen3Model(torch.nn.Module):
             *,
             attention_mask: torch.Tensor,
             position_ids: torch.Tensor,
+            adapter_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
         import os
@@ -219,6 +240,7 @@ class Qwen3Model(torch.nn.Module):
                 hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
+                adapter_indices=adapter_indices,
                 do_print=(i==0) if do_print else False,
             )
 
@@ -232,7 +254,11 @@ class Qwen3ForCausalLM(torch.nn.Module):
         self.config = config
         self.model = Qwen3Model(config, dtype=dtype)
         # if not config.tie_word_embeddings:
-        self.lm_head = torch.nn.Linear(config.hidden_size, config.vocab_size, bias=False, dtype=dtype)
+        self.lm_head = LoRALinear(config.hidden_size,
+                                  config.vocab_size,
+                                  max_lora_adapters=config.max_lora_adapters,
+                                  max_lora_rank=config.max_lora_rank,
+                                  bias=False, dtype=dtype)
     
     def forward(
             self,
@@ -240,20 +266,25 @@ class Qwen3ForCausalLM(torch.nn.Module):
             *,
             attention_mask: torch.Tensor,
             position_ids: torch.Tensor,
+            adapter_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = self.model(
             input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
+            adapter_indices=adapter_indices,
         )
         # if self.config.tie_word_embeddings:
         #     lm_logits = torch.matmul(hidden_states, self.model.embed_tokens.weight.t())
         # else:
-        lm_logits = self.lm_head(hidden_states)
+        lm_logits = self.lm_head(hidden_states, adapter_indices=adapter_indices)
         return lm_logits
     
 
-    def generation(self, input_ids: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
+    def generation(self,
+                   input_ids: torch.Tensor,
+                   max_new_tokens: int,
+                   adapter_indices: int) -> torch.Tensor:
 
         batch = input_ids.shape[0]
         assert batch == 1, "Only batch size of 1 is supported for generation."
@@ -267,10 +298,16 @@ class Qwen3ForCausalLM(torch.nn.Module):
                 device=input_ids.device,
                 dtype=input_ids.dtype,
             ).unsqueeze(0)
+            adapter_indices_tensor = torch.full(
+                (1,), adapter_indices,
+                device=input_ids.device,
+                dtype=torch.long,
+            )
             logits = self.forward(
                 generated,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
+                adapter_indices=adapter_indices_tensor,
             )
             next_token_ids = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
             generated = torch.cat((generated, next_token_ids), dim=1)

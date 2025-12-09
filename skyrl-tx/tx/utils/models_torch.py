@@ -105,6 +105,13 @@ def load_lora_checkpoint(
     load_safetensors_pytorch(checkpoint_path,
                              adapter_lora_params)
     
+    for name, param in adapter_lora_params.items():
+        if "lora_scaling" in name:
+            param[adapter_index] = adapter_config.alpha / adapter_config.rank
+
+        if "lora_ranks" in name:
+            param[adapter_index] = adapter_config.rank
+
     # all lora_B in params should have norms > 0
     # for name, param in adapter_lora_params.items():
     #     if "lora_B" in name:

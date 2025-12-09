@@ -21,14 +21,20 @@ class LoRAMixin:
             self.lora_A = None
             self.lora_B = None
         else:
-            self.lora_scaling = torch.ones(
-                (max_lora_adapters,),
-                dtype=dtype,
+            self.register_buffer(
+                'lora_scaling',
+                torch.ones(
+                    (max_lora_adapters,),
+                    dtype=dtype,
+                )
             )
-            self.lora_ranks = torch.ones(
-                (max_lora_adapters,),
-                dtype=torch.int32,
-            ) * max_lora_rank
+            self.register_buffer(
+                'lora_ranks',
+                torch.ones(
+                    (max_lora_adapters,),
+                    dtype=torch.int32,
+                ) * max_lora_rank
+            )
 
             self.lora_A = torch.nn.Parameter(
                 torch.empty(
@@ -72,7 +78,7 @@ class LoRAMixin:
             B = self.lora_B[adapter_idx]
             intermediate = torch.matmul(x[i], A.T)
             lora_out = torch.matmul(intermediate, B.T)
-            lora_outs[i] = lora_out
+            lora_outs[i] = lora_out * self.lora_scaling[adapter_idx]
             # print(f"adapter_idx: {adapter_idx}, rank: {rank}, adapter_B norm: {B.norm().item():.6f}")
             # print(f"LoRA applied for batch {i}, adapter {adapter_idx}, rank {rank}, delta norm {lora_out.norm().item():.6f}")
         return base_output + lora_outs

@@ -89,7 +89,7 @@ def test_qwen3_generate():
     generated_tokens = generated[:, batch.input_ids.shape[1]:].cpu().numpy()
     generated_text = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
     print("Generated text:", generated_text)
-
     assert (generated_tokens == hf_generated_tokens).all(), "Generated tokens do not match HuggingFace output."
+
 if __name__ == "__main__":
     test_qwen3_generate()
